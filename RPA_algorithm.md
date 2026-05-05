@@ -29,192 +29,201 @@
 
 ## Pseudocode
 
+The following pseudocode mirrors the flowchart logic from the node `For each payment lines` onward.
+
 ```
-function main(AreaSanteFile, OracleClientFile, Parameters):
-    AreaSanteData = load_excel(AreaSanteFile)
-    OracleClientData = load_excel(OracleClientFile)
-
-    validate_area_sante_structure(AreaSanteData)
-    validate_oracle_client_structure(OracleClientData)
-
-    OutputWorkbook = create_output_workbook(AreaSanteFile, Parameters)
-    ProcessingSheet = prepare_processing_sheet(OutputWorkbook, AreaSanteData, OracleClientData)
-
-    filteredLines = filter_lines(ProcessingSheet, Parameters)
-    totalLines = count(filteredLines)
+function process_payment_lines(ProcessingSheet, Parameters):
+    totalLines = count_all_payment_lines(ProcessingSheet)
     treatedLines = 0
+    runStartTime = now()
 
-    for each line in filteredLines:
-        if treatedLines >= Parameters.maxLines:
-            break
+    for each paymentLine in ProcessingSheet:
+        paymentLine.StartTime = now()
 
-        line.StartTime = now()
+        if not columns_are_filled_and_formatted(
+            paymentLine,
+            ["Customer account", "Amount", "Receipt date"]
+        ):
+            paymentLine.Status = "Data error"
+            goto finalize_current_line
 
-        if should_ignore_line(line, Parameters.ignoreAmount):
-            line.Status = "Ignored"
-            log_line(line, "INFO", "Ignored based on ignoreAmount")
-            save_progress_if_needed(OutputWorkbook, Parameters, treatedLines)
-            continue
+        if paymentLine.Amount < Parameters.ignoreAmount:
+            paymentLine.Status = "Ignored"
+            goto finalize_current_line
 
-        if not validate_line_fields(line):
-            line.Status = "Data error"
-            log_line(line, "ERROR", "Missing or invalid required field")
-            save_progress_if_needed(OutputWorkbook, Parameters, treatedLines)
-            continue
+        if paymentLine.Status is not empty:
+            goto finalize_current_line
 
-        oracleClientNumber = lookup_oracle_client_number(line, OracleClientData)
-        line.OracleClientNumber = oracleClientNumber
+        fill_oracle_field("Customer Account Number", paymentLine.CustomerAccount)
+        fill_oracle_field("Paying Customer", "00500133712631")
+        fill_oracle_field("Receipt date", convert_date_for_oracle(paymentLine.ReceiptDate))
+        fill_oracle_field("Entered Amount", paymentLine.Amount)
+        click_search_button()
 
-        searchCriteria = build_search_criteria(line, oracleClientNumber)
-        searchResult = query_oracle_receipts(searchCriteria)
+        oracleCount = count_lines_found_in_oracle()
+        areaSanteDuplicateCount = count_lines_with_same_duplicate_key(
+            ProcessingSheet,
+            paymentLine.DuplicateKey
+        )
 
-        if searchResult.count == 0:
-            line.Status = determine_no_line_status(line)
-            line.Log = "No Oracle receipt found"
-            save_progress_if_needed(OutputWorkbook, Parameters, treatedLines)
-            continue
+        if oracleCount == areaSanteDuplicateCount:
+            update_status_for_duplicate_key(
+                ProcessingSheet,
+                paymentLine.DuplicateKey,
+                "Reconciled"
+            )
+            goto store_oracle_count_and_complete
 
-        if searchResult.count == 1:
-            receipt = searchResult.receipts[0]
-            line.OracleOriginalAmount = receipt.firstHistoryAmount
-            line.OracleLastAmount = receipt.mostRecentHistoryAmount
-            line.OracleDeltaAmount = compute_delta(line)
-            line.Status = determine_single_line_status(line, receipt)
-            log_line(line, "INFO", "Single receipt found")
-            save_progress_if_needed(OutputWorkbook, Parameters, treatedLines)
-            continue
+        if oracleCount > areaSanteDuplicateCount:
+            update_status_for_duplicate_key(
+                ProcessingSheet,
+                paymentLine.DuplicateKey,
+                "Duplicated"
+            )
+            goto store_oracle_count_and_complete
 
-        if searchResult.count > 1:
-            line.CountOfOracleLines = searchResult.count
-            line.CountOfAreaSanteLines = compute_duplicate_key_count(ProcessingSheet, line.DuplicateKey)
-            line.CountOfExtraLinesInOracle = line.CountOfOracleLines - line.CountOfAreaSanteLines
-            line.Status = determine_multi_line_status(line)
-            log_line(line, "INFO", "Multiple Oracle receipts found")
-            save_progress_if_needed(OutputWorkbook, Parameters, treatedLines)
-            continue
+        if exists_line_with_same_duplicate_key_and_status(
+            ProcessingSheet,
+            paymentLine.DuplicateKey,
+            "Reconciled"
+        ):
+            go_back_to_previous_search_page()
+            set_entered_amount_search_mode("less_than", paymentLine.Amount)
+            click_search_button()
+            oracleCount = count_lines_found_in_oracle()
 
-        line.EndTime = now()
-        line.ExecutionTime = line.EndTime - line.StartTime
-        treatedLines += 1
-        update_progress(OutputWorkbook, treatedLines, totalLines)
+            if oracleCount == 1:
+                click_receipt_number_of_found_line()
+                paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                paymentLine.Status = "Amended"
+                goto store_oracle_count_and_complete
 
-    refresh_execution_report(OutputWorkbook)
-    save_workbook(OutputWorkbook)
+            if oracleCount == 0:
+                insert_missing_payment_lines_to_book_into_spreadsheet(paymentLine)
+                paymentLine.Treated = "To book"
+                goto store_oracle_count_and_complete
 
-    if all_lines_processed_successfully(filteredLines):
-        if Parameters.sendMail:
-            send_success_email(OutputWorkbook, Parameters.receivers)
-        return "Success"
-    else:
-        if Parameters.sendMail:
-            send_failure_email(OutputWorkbook, Parameters.receivers)
-        return "Completed with issues"
+            paymentLine.Status = "To analyze"
+            goto finalize_current_line
+
+        if oracleCount == 1:
+            paymentLine.Status = "Reconciled"
+            goto store_oracle_count_and_complete
+
+        if oracleCount == 0:
+            go_back_to_previous_search_page()
+            set_entered_amount_search_mode("equal", paymentLine.Amount)
+            remove_oracle_field("Receipt date")
+            click_search_button()
+            oracleCount = count_lines_found_in_oracle()
+
+            if oracleCount == areaSanteDuplicateCount:
+                update_status_for_duplicate_key(
+                    ProcessingSheet,
+                    paymentLine.DuplicateKey,
+                    "Reconciled"
+                )
+                goto store_oracle_count_and_complete
+
+            if oracleCount > areaSanteDuplicateCount:
+                update_status_for_duplicate_key(
+                    ProcessingSheet,
+                    paymentLine.DuplicateKey,
+                    "Duplicated"
+                )
+                goto store_oracle_count_and_complete
+
+            if oracleCount == 1:
+                click_receipt_number_of_found_line()
+                paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                paymentLine.Status = "Reconciled"
+                goto store_oracle_count_and_complete
+
+            if oracleCount == 0:
+                go_back_to_previous_search_page()
+                set_entered_amount_search_mode("less_than", paymentLine.Amount)
+                click_search_button()
+                oracleCount = count_lines_found_in_oracle()
+
+                if oracleCount == 1:
+                    click_receipt_number_of_found_line()
+                    paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                    paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                    paymentLine.Status = "Amended"
+                    goto store_oracle_count_and_complete
+
+                if oracleCount == 0:
+                    if exists_line_with_same_duplicate_key_and_status(
+                        ProcessingSheet,
+                        paymentLine.DuplicateKey,
+                        "Reconciled"
+                    ):
+                        insert_missing_payment_lines_to_book_into_spreadsheet(paymentLine)
+                        paymentLine.Treated = "To book"
+                        goto store_oracle_count_and_complete
+
+                    paymentLine.Status = "To analyze"
+                    goto finalize_current_line
+
+                paymentLine.Status = "To analyze"
+                goto finalize_current_line
+
+            paymentLine.Status = "To analyze"
+            goto finalize_current_line
+
+        paymentLine.Status = "To analyze"
+        goto finalize_current_line
+
+        label store_oracle_count_and_complete:
+            paymentLine.CountOfOracleLines = oracleCount
+
+            if oracleCount > 0:
+                paymentLine.CountOfReversedExtraLines = count_reversed_lines_in_oracle()
+                paymentLine.ReceiptDateInOracle = read_receipt_date_from_oracle()
+                paymentLine.BankAccount = read_remittance_bank_account_from_oracle()
+
+        label finalize_current_line:
+            paymentLine.EndTime = now()
+            treatedLines = treatedLines + 1
+            paymentLine.LastExecutionTime = paymentLine.EndTime - paymentLine.StartTime
+            executionTime = now() - runStartTime
+            remainingTime = paymentLine.LastExecutionTime * (totalLines - treatedLines)
+            progressPercent = (treatedLines / totalLines) * 100
+
+            update_ui_execution_time(executionTime)
+            update_ui_remaining_time(remainingTime)
+            update_ui_treated_lines_counter(treatedLines)
+            update_ui_progress(progressPercent)
+
+            if treatedLines % Parameters.saveEach == 0:
+                save_excel_file()
+
+            if treatedLines == totalLines:
+                break
+
+    save_excel_file()
+    build_pivot_report_sheet("Execution report")
+    send_success_email_with_attachment()
+    display_success_popup()
 ```
 
 ---
 
-## Supporting functions
+## Flow Notes
 
-### `validate_area_sante_structure(data)`
-
-- check required headers exist
-- check file has at least one data row
-- if invalid, raise error
-
-### `validate_oracle_client_structure(data)`
-
-- check mapping key exists
-- check at least one mapping row exists
-- if invalid, raise error
-
-### `prepare_processing_sheet(workbook, AreaSanteData, OracleClientData)`
-
-- copy data into a working sheet
-- add columns:
-  - `Start time`
-  - `End time`
-  - `Status`
-  - `Oracle Client N°`
-  - `Oracle Original Amount`
-  - `Oracle Last Amount`
-  - `Oracle Delta Amount`
-  - `Count of lines in Area Santé`
-  - `Count of Extra lines in Oracle`
-  - `Count of Reversed Extra lines`
-  - `Date`, `Time`, `Level`, `Log`
-- add formulas or placeholders for columns
-- return the working sheet reference
-
-### `filter_lines(sheet, Parameters)`
-
-- apply period filter
-- apply ignore amount threshold filter
-- limit to `maxLines`
-- return ordered list of line objects
-
-### `should_ignore_line(line, ignoreAmount)`
-
-- return true if line.Amount >= ignoreAmount
-
-### `validate_line_fields(line)`
-
-- return false if any required field is missing or invalid
-
-### `lookup_oracle_client_number(line, OracleClientData)`
-
-- return Oracle Client number using Social Security number lookup
-- if lookup fails, return null or error state
-
-### `build_search_criteria(line, oracleClientNumber)`
-
-- return object with:
-  - `Client`
-  - `Paying Customer`
-  - `Date`
-  - `Amount`
-
-### `query_oracle_receipts(criteria)`
-
-- execute deterministic lookup in Oracle
-- return searchResults with count and receipt details
-
-### `determine_no_line_status(line)`
-
-- return `Ignored` or `To analyze` depending on business rule
-
-### `determine_single_line_status(line, receipt)`
-
-- if receipt amounts reconcile: return `Reconciled`
-- if duplicate indicators exist: return `Duplicated`
-- if adjustment required: return `Amended`
-
-### `determine_multi_line_status(line)`
-
-- compare Oracle line count with `Count of lines in Area Santé`
-- if equal: return `Reconciled`
-- if Oracle count greater: return `Duplicated` or `Amended`
-- if Area Santé count greater: return `To analyze`
-
-### `compute_delta(line)`
-
-- return `line.OracleLastAmount - line.OracleOriginalAmount`
-
-### `log_line(line, level, message)`
-
-- write a log entry to the line record
-
-### `update_progress(workbook, treatedLines, totalLines)`
-
-- compute progress percentage
-- update remaining time estimate
-
-### `refresh_execution_report(workbook)`
-
-- rebuild pivot and summary information
-
-### `save_progress_if_needed(workbook, Parameters, treatedLines)`
-
-- save workbook after every `Parameters.saveEach` processed lines
+- `Data error` is assigned when at least one of `Customer account`, `Amount`, or `Receipt date` is missing or not correctly formatted.
+- `Ignored` is assigned when the amount is below the `ignoreAmount` parameter.
+- A line with an already filled `Status` is skipped because it is considered already treated.
+- The Oracle search logic is executed in four successive modes:
+  - exact date and exact amount
+  - exact date and amount less than the Excel amount
+  - no date and exact amount
+  - no date and amount less than the Excel amount
+- `Reconciled`, `Duplicated`, `Amended`, `To analyze`, and `To book` are assigned according to the branch reached in the flowchart.
+- When a branch updates all rows sharing the same `Duplicate key`, the action applies to the whole duplicate group, not only to the current row.
+- After each processed line, the workbook timing fields and the RPA UI counters are refreshed before the next loop iteration.
 
 ---
 
