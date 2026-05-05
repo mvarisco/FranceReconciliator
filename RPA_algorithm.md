@@ -107,72 +107,147 @@ function process_payment_lines(ProcessingSheet, Parameters):
             paymentLine.Status = "To analyze"
             goto finalize_current_line
 
+        # --- Area Santé count > Oracle count (remaining sub-case) ---
+        # At this point: areaSanteDuplicateCount > oracleCount
+
+        # Sub-case: how many lines did Pass 1 find?
         if oracleCount == 1:
+            # 1 line found in Pass 1 and no "Reconciled" exists for dup key
             paymentLine.Status = "Reconciled"
             goto store_oracle_count_and_complete
 
         if oracleCount == 0:
+            # 0 lines found in Pass 1 and no "Reconciled" exists for dup key
+            # ═══ PASS 2 : Date = / Amount < ═══
             go_back_to_previous_search_page()
-            set_entered_amount_search_mode("equal", paymentLine.Amount)
-            remove_oracle_field("Receipt date")
+            set_entered_amount_search_mode("less_than", paymentLine.Amount)
             click_search_button()
             oracleCount = count_lines_found_in_oracle()
-
-            if oracleCount == areaSanteDuplicateCount:
-                update_status_for_duplicate_key(
-                    ProcessingSheet,
-                    paymentLine.DuplicateKey,
-                    "Reconciled"
-                )
-                goto store_oracle_count_and_complete
-
-            if oracleCount > areaSanteDuplicateCount:
-                update_status_for_duplicate_key(
-                    ProcessingSheet,
-                    paymentLine.DuplicateKey,
-                    "Duplicated"
-                )
-                goto store_oracle_count_and_complete
 
             if oracleCount == 1:
                 click_receipt_number_of_found_line()
                 paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
                 paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
-                paymentLine.Status = "Reconciled"
+                paymentLine.Status = "Amended"
                 goto store_oracle_count_and_complete
 
             if oracleCount == 0:
+                # Check if at least one line with same dup key is "Reconciled"
+                if exists_line_with_same_duplicate_key_and_status(
+                    ProcessingSheet,
+                    paymentLine.DuplicateKey,
+                    "Reconciled"
+                ):
+                    insert_missing_payment_lines_to_book_into_spreadsheet(paymentLine)
+                    paymentLine.Treated = "To book"
+                    goto store_oracle_count_and_complete
+
+                # No Reconciled line found → go to Pass 3
+                # ═══ PASS 3 : No Date / Amount = ═══
                 go_back_to_previous_search_page()
-                set_entered_amount_search_mode("less_than", paymentLine.Amount)
+                set_entered_amount_search_mode("equal", paymentLine.Amount)
+                remove_oracle_field("Receipt date")
                 click_search_button()
                 oracleCount = count_lines_found_in_oracle()
 
-                if oracleCount == 1:
-                    click_receipt_number_of_found_line()
-                    paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
-                    paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
-                    paymentLine.Status = "Amended"
-                    goto store_oracle_count_and_complete
+                areaSanteDuplicateCount2 = count_lines_with_same_duplicate_key(
+                    ProcessingSheet,
+                    paymentLine.DuplicateKey
+                )
 
-                if oracleCount == 0:
-                    if exists_line_with_same_duplicate_key_and_status(
+                if oracleCount == areaSanteDuplicateCount2:
+                    update_status_for_duplicate_key(
                         ProcessingSheet,
                         paymentLine.DuplicateKey,
                         "Reconciled"
-                    ):
+                    )
+                    goto store_oracle_count_and_complete
+
+                if oracleCount > areaSanteDuplicateCount2:
+                    update_status_for_duplicate_key(
+                        ProcessingSheet,
+                        paymentLine.DuplicateKey,
+                        "Duplicated"
+                    )
+                    goto store_oracle_count_and_complete
+
+                # Area Santé > Oracle in Pass 3
+                # Check if "Reconciled" exists for same dup key
+                if exists_line_with_same_duplicate_key_and_status(
+                    ProcessingSheet,
+                    paymentLine.DuplicateKey,
+                    "Reconciled"
+                ):
+                    # ═══ PASS 4 : No Date / Amount < ═══
+                    go_back_to_previous_search_page()
+                    set_entered_amount_search_mode("less_than", paymentLine.Amount)
+                    click_search_button()
+                    oracleCount = count_lines_found_in_oracle()
+
+                    if oracleCount == 1:
+                        click_receipt_number_of_found_line()
+                        paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                        paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                        paymentLine.Status = "Amended"
+                        goto store_oracle_count_and_complete
+
+                    if oracleCount == 0:
                         insert_missing_payment_lines_to_book_into_spreadsheet(paymentLine)
                         paymentLine.Treated = "To book"
                         goto store_oracle_count_and_complete
 
+                    # Several found
                     paymentLine.Status = "To analyze"
                     goto finalize_current_line
 
+                # No "Reconciled" in dup key in Pass 3
+                if oracleCount == 1:
+                    click_receipt_number_of_found_line()
+                    paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                    paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                    paymentLine.Status = "Reconciled"
+                    goto store_oracle_count_and_complete
+
+                if oracleCount == 0:
+                    # ═══ PASS 4 : No Date / Amount < ═══
+                    go_back_to_previous_search_page()
+                    set_entered_amount_search_mode("less_than", paymentLine.Amount)
+                    click_search_button()
+                    oracleCount = count_lines_found_in_oracle()
+
+                    if oracleCount == 1:
+                        click_receipt_number_of_found_line()
+                        paymentLine.OracleOriginalAmount = read_first_amount_from_history_tab()
+                        paymentLine.OracleLastAmount = read_most_recent_amount_from_history_tab()
+                        paymentLine.Status = "Amended"
+                        goto store_oracle_count_and_complete
+
+                    if oracleCount == 0:
+                        if exists_line_with_same_duplicate_key_and_status(
+                            ProcessingSheet,
+                            paymentLine.DuplicateKey,
+                            "Reconciled"
+                        ):
+                            insert_missing_payment_lines_to_book_into_spreadsheet(paymentLine)
+                            paymentLine.Treated = "To book"
+                            goto store_oracle_count_and_complete
+
+                        paymentLine.Status = "To analyze"
+                        goto finalize_current_line
+
+                    # Several found
+                    paymentLine.Status = "To analyze"
+                    goto finalize_current_line
+
+                # Several found in Pass 3
                 paymentLine.Status = "To analyze"
                 goto finalize_current_line
 
+            # Several found in Pass 2
             paymentLine.Status = "To analyze"
             goto finalize_current_line
 
+        # Several lines found in Pass 1 sub-case
         paymentLine.Status = "To analyze"
         goto finalize_current_line
 
@@ -216,12 +291,17 @@ function process_payment_lines(ProcessingSheet, Parameters):
 - `Data error` is assigned when at least one of `Customer account`, `Amount`, or `Receipt date` is missing or not correctly formatted.
 - `Ignored` is assigned when the amount is below the `ignoreAmount` parameter.
 - A line with an already filled `Status` is skipped because it is considered already treated.
-- The Oracle search logic is executed in four successive modes:
-  - exact date and exact amount
-  - exact date and amount less than the Excel amount
-  - no date and exact amount
-  - no date and amount less than the Excel amount
-- `Reconciled`, `Duplicated`, `Amended`, `To analyze`, and `To book` are assigned according to the branch reached in the flowchart.
+- The Oracle search logic is executed in up to four successive passes:
+  - **Pass 1** — Client = / Paying Customer = / Date = / Amount =
+  - **Pass 2** — Client = / Paying Customer = / Date = / Amount <
+  - **Pass 3** — Client = / Paying Customer = / No Date / Amount =
+  - **Pass 4** — Client = / Paying Customer = / No Date / Amount <
+- Not all passes are always executed; the algorithm exits as soon as a definitive status is determined.
+- The "Duplicate key" check (does a line with same key already have Status = "Reconciled"?) gates the transition between sub-branches:
+  - In the "Area Santé > Oracle" sub-case of Pass 1: if YES → go to Pass 2; if NO → check 1-found/0-found sub-cases.
+  - In the "Area Santé > Oracle" sub-case of Pass 3: if YES → go to Pass 4; if NO → check 1-found/0-found sub-cases.
+  - In Pass 2 and Pass 4, when 0 lines are found: if a "Reconciled" dup key line exists → "To book"; otherwise → "To analyze".
+- The four possible terminal statuses from the matching algorithm are: `Reconciled`, `Duplicated`, `Amended`, `To analyze`, `To book`.
 - When a branch updates all rows sharing the same `Duplicate key`, the action applies to the whole duplicate group, not only to the current row.
 - After each processed line, the workbook timing fields and the RPA UI counters are refreshed before the next loop iteration.
 
